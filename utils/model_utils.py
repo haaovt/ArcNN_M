@@ -23,11 +23,11 @@ class MyModel2(nn.Module):
         super().__init__()
         # cfgs['model'] is str type, i.e. cfgs['model'] = 'MyModel'. In cases where many models is implemented, configurations of model should be in cfgs['MyModel'][...]
 
-        input_size = cfgs[cfgs['model']]['input_size']
-        n_classes = cfgs[cfgs['model']]['n_classes']
+        num_inputs = cfgs[cfgs['model']]['num_inputs']
+        num_classes = cfgs['num_classes']
 
 
-        self.model = nn.Sequential(nn.Linear(input_size, n_classes),
+        self.model = nn.Sequential(nn.Linear(num_inputs, num_classes),
                                    nn.ReLU(True),
                                    )
 

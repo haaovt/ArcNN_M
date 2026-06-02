@@ -1,0 +1,34 @@
+train_id: no1
+load_checkpoint: None
+
+# dataset
+rootdir: ./dataset
+dataset: MyData
+num_classes: 6
+val_fold: None
+test_fold: None
+
+# train:
+trainer: BaseTrainer
+batch_size: 32
+num_epochs: 100
+ckpt_freq: 100
+ckpt: None # path to checkpoint file
+learning_rate: 5e-06
+weight_decay: 0.1
+loss_type: CrossEntropy
+
+
+# models
+model: MLP
+MLP:
+  mlp_num_hidden: 32
+  mlp_dropout: 0.1
+  mlp_width: 64
+  mlp_depth: 5
+  num_inputs: 1024
+Resnet:
+  resnet18: true
+  resnet_dropout: 0.1
+  freeze_bn: true
+
