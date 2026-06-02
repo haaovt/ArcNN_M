@@ -55,7 +55,7 @@ def get_dataloader(cfgs, args):
                                 )
         
         test_dataset = datasets_dict[cfgs['dataset']](cfgs['test_fold'], file_loader=CustomFileLoader, cfgs=cfgs)
-        test_loaders = DataLoader(dataset=dataset,
+        test_loaders = DataLoader(dataset=test_dataset,
                             batch_size=cfgs['batch_size'],
                             shuffle=False,
                             num_workers=args.num_workers
