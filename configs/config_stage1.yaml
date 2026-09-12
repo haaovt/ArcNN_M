@@ -1,0 +1,29 @@
+train_id: no0
+load_checkpoint: None
+
+# dataset
+rootdir: ./dataset
+dataset: MyData
+num_classes: 2
+val_fold: None
+test_fold: None
+
+# train:
+trainer: BaseTrainer
+optimizer: Rmsprop
+batch_size: 64
+num_epochs: 50
+ckpt_freq: 5
+ckpt: None # path to checkpoint file
+learning_rate: 0.0002 
+weight_decay: 0.0001
+loss_type: CrossEntropy
+
+
+# models
+model: ArcNN
+ArcNN:
+  num_inputs: 1
+  dropout: 0.2
+
+

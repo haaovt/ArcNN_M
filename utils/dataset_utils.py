@@ -2,76 +2,63 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset
 import os
-import h5py
+import bisect
 
 class CustomDataset(Dataset):
-    """
-    Custom Dataset class for datasets other than images, look for ImageFolder of torchvision if image dataset is wanted
-    """
-    def __init__(self, dataset_dir, file_loader, transform=None, cfgs=None):
-        """
-        Read all samples' path in a dataset folder
-
-        Args:
-            dataset_dir (str)   :   path to dataset folder, can use type Path from pathlib if preferred
-            file_loader (func)  :   function to read file
-            transform   (any)   :   any type, transformations to apply to data
-            cfgs         (dict) :   contains all the configurations
-        """
-
+    def __init__(self, dataset_dir, file_loader=None, transform=None, cfgs=None):
         super().__init__()
         self.dataset_dir = dataset_dir
-        self.sample_paths = [path for path in os.listdir(dataset_dir) if not os.path.isdir(path)] # can add more conditions to read paths correctly, i.e. if ... and ".h5" in path
-        self.file_loader = file_loader
         self.transform = transform
+        
+        self.x_paths = sorted([
+            os.path.join(dataset_dir, p) for p in os.listdir(dataset_dir) 
+            if p.lower().endswith('_x.npy')
+        ])
+        self.y_paths = [p.replace('_x.npy', '_y.npy') for p in self.x_paths]
+        
+        self.cumulative_sizes = []
+        total_chunks = 0
+        
+        for p in self.x_paths:
+            # Chỉ đọc header để lấy kích thước (0MB RAM)
+            arr_view = np.load(p, mmap_mode='r')
+            total_chunks += arr_view.shape[0]
+            self.cumulative_sizes.append(total_chunks)
+            
+        self.total_samples = total_chunks
 
     def __getitem__(self, index):
-        """
-        Return sample by index using lazy loader
-
-        Args:
-            index (int) :   Index
-
-        Return:
-            (tuple)   : (sample, target)
-        """
-
-        path = self.sample_paths[index]
-        sample, target = self.file_loader(os.path.join(self.dataset_dir,path))
+        file_idx = bisect.bisect_right(self.cumulative_sizes, index)
+        
+        if file_idx == 0:
+            rel_idx = index
+        else:
+            rel_idx = index - self.cumulative_sizes[file_idx - 1]
+            
+        x_mmap = np.load(self.x_paths[file_idx], mmap_mode='r')
+        y_mmap = np.load(self.y_paths[file_idx], mmap_mode='r')
+        
+        x = np.array(x_mmap[rel_idx])
+        y = np.array(y_mmap[rel_idx])
+        
         if self.transform is not None:
-            sample = self.transform(sample)
-
-        # implement target = self.target_transform(target) if needed
-
-        return sample, target
+            x = self.transform(x)
+            
+        return torch.from_numpy(x).float(), torch.tensor(y, dtype=torch.long)
 
     def __len__(self):
-        return len(self.sample_paths)
-    
+        return self.total_samples
 
-def CustomFileLoader(path):
-    """
-    A function to read data of a sample from path. This can be intergrated into CustomDataset.__getitem__() for code simplicity. Changed based on how data is store, here is an example of .h5 file.
-    Args:
-        path (str)  :   file path to read from
-    
-    Return:
-        (tuple)   : (sample, target)
-    """
-    if not os.path.isfile(path):
-        raise ValueError(f"File {path} cannot be found!")
-    with h5py.File(path, 'r') as hf:
-        sample = hf['sample'][()]
-        target = hf['target'][()]
-    return sample, target
+class PCADataset(Dataset):
+    def __init__(self, feature_path, labels_path):
+        super().__init__()
+        self.features = np.load(feature_path)
+        self.labels = np.load(labels_path)
 
+    def __getitem__(self, index):
+        x = self.features[index]
+        y = self.labels[index]
+        return torch.from_numpy(x).float(), torch.tensor(y, dtype=torch.long)
 
-
-
-
-
-
-
-
-
-
+    def __len__(self):
+        return len(self.labels)

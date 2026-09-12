@@ -1,0 +1,28 @@
+train_id: no0
+load_checkpoint: None
+
+# dataset
+rootdir: ./dataset_pca
+dataset: PCADataset
+num_classes: 2
+val_fold: None
+test_fold: None
+
+# train:
+trainer: BaseTrainer
+optimizer: Rmsprop
+batch_size: 64
+num_epochs: 50
+ckpt_freq: 5
+ckpt: None # path to checkpoint file
+learning_rate: 0.001
+weight_decay: 0.001
+loss_type: CrossEntropy
+
+
+# models
+model: SHLNN
+SHLNN:
+  num_inputs: 70
+
+

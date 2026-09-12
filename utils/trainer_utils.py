@@ -1,29 +1,42 @@
 import torch
 import torch.nn as nn
-import numpy as  np
-import tqdm
+import numpy as np
+from tqdm.auto import tqdm
 import json
 import os
 
-from utils.model_utils import MyModel, MyModel2
-
+from utils.model_utils import ArcNN, SHLNN
 
 models_dict = {
-    "MyModel"   :   MyModel,
-    "MyModel2"  :   MyModel2,
+    "ArcNN": ArcNN,
+    "SHLNN": SHLNN,
 }
 
+class EarlyStopping:
+    def __init__(self, patience=3, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+
+    def __call__(self, val_loss):
+        if self.best_loss is None:
+            self.best_loss = val_loss
+        elif val_loss > self.best_loss - self.min_delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_loss = val_loss
+            self.counter = 0
+
 class BaseTrainer():
-    """
-    A Trainer is responsible for: handling training steps, overall training, save/load checkpoints, save results and logging
-    """
-    # This is just an reference for code structure, most of the code should be modified according to application
-
-    def __init__ (self, cfgs, args):
+    def __init__(self, cfgs, args):
         self.cuda = args.cuda
-        self.model = models_dict[cfgs['model']] # some implementation requires seperate models for feature extractor and classifier, change if needed 
+        self.model = models_dict[cfgs['model']](cfgs)
 
-        self.optimizer = torch.optim.Adam(self.model.parameters(), 
+        self.optimizer = torch.optim.RMSprop(self.model.parameters(), 
                                           lr=cfgs['learning_rate'],
                                           weight_decay=cfgs['weight_decay'])
         
@@ -35,120 +48,136 @@ class BaseTrainer():
         if self.cuda:
             self.model.cuda()
 
-
     def train_step(self, train_loader):
-        """
-        Perform one train step (one epoch step) by iterating over all train_loader. Single batch step require reimplementation.
-        """
         self.model.train()
-        loader_len = 0.0
-        total_loss_class = 0.0
+        loader_len = 0
+        total_loss = 0.0
+        acc_corrects = 0
 
-        for batch_idx, (all_x, all_y) in enumerate(train_loader):
+        # Đã gỡ bỏ tqdm ở đây để không in rác ra màn hình
+        for all_x, all_y in train_loader:
             if self.cuda:
-                all_x = all_x.cuda()
-                all_y = all_y.cuda()
+                all_x, all_y = all_x.cuda(), all_y.cuda()
 
-            loss_class = self.loss_type(self.predict(all_x), all_y)
+            pred = self.predict(all_x)
+            loss = self.loss_type(pred, all_y)
 
             self.optimizer.zero_grad()
-            loss_class.backward()
+            loss.backward()
             self.optimizer.step()
 
-            total_loss_class += loss_class.item()
+            _, pred_classes = pred.max(1)
+            acc_corrects += torch.eq(pred_classes, all_y).sum().item()
+            
+            total_loss += loss.item() * all_x.shape[0]
             loader_len += all_x.shape[0]
 
-        total_loss_class /= loader_len
-
-        return {'loss_class' : total_loss_class} # return a dict in cases where many losses is calculated, else, return total_loss_class is enough
-
+        if loader_len == 0: return {'loss_class': 0.0, 'train_acc': 0.0}
+        return {'loss_class': total_loss / loader_len, 'train_acc': acc_corrects / loader_len}
 
     def predict(self, x):
         return self.model(x)
 
-
     def validate_step(self, loader):
-        """
-        Perform validation step over the entire split (can be train, val or test split) 
-        """
         self.model.eval()
-        acc = 0.0
-        loader_len = 0.0
+        loader_len = 0
+        total_loss = 0.0
+        acc_corrects = 0
 
-        pred_list = []
-
-        for batch_idx, minibatch in enumerate(loader):
-            all_x = minibatch.batch_feature
-            all_y = minibatch.batch_label
-
+        # Đã gỡ bỏ tqdm ở đây
+        for all_x, all_y in loader:
             if self.cuda:
-                all_x = all_x.cuda()
-                all_y = all_y.cuda()
+                all_x, all_y = all_x.cuda(), all_y.cuda()
 
             with torch.no_grad():
                 pred = self.predict(all_x)
-                _, pred = pred.max(1) # same as np.argmax()
-                num_corrects = torch.eq(pred, all_y).sum()
-                pred_list.extend(zip(pred.cpu().numpy(),all_y.cpu().numpy())) # save predictions if needed
+                loss = self.loss_type(pred, all_y)
+                total_loss += loss.item() * all_x.shape[0]
 
-                acc += num_corrects.cpu().numpy()      
+                _, pred_classes = pred.max(1)
+                acc_corrects += torch.eq(pred_classes, all_y).sum().item()
                 loader_len += all_x.shape[0]
 
         self.model.train()
 
-        return pred_list, acc/loader_len
-
+        if loader_len == 0: return 0.0, 0.0
+        return acc_corrects / loader_len, total_loss / loader_len
 
     def train(self, num_epochs, train_loader, val_loader, test_loader, ckpt_freq=10, results_dir=None, cur_epoch=0):
-        """
-        Trainer function that performs training over (num_epochs-cur_epoch) epochs.        
-        """
-
         loss_list = [] 
+        early_stopping = EarlyStopping(patience=3)
 
-        iterator = tqdm(range(cur_epoch, num_epochs), total=num_epochs-cur_epoch, unit='epoch', position=0, leave=True)
+        # Chỉ giữ lại 1 thanh tqdm duy nhất đếm tổng số Epoch
+        iterator = tqdm(range(cur_epoch, num_epochs), total=num_epochs-cur_epoch, unit='epoch', desc="Epochs")
         for epoch in iterator:
-            loss_list.append(self.train_step(train_loader))
+            train_metrics = self.train_step(train_loader)
+            val_acc, val_loss = self.validate_step(val_loader)
+            test_acc, test_loss = self.validate_step(test_loader)
+            
+            loss_class = train_metrics['loss_class']
+            train_acc = train_metrics['train_acc']
 
-            if (epoch+1)%ckpt_freq == 0: # change if needed
-                _, train_acc = self.validate_step(train_loader)
-                _, val_acc = self.validate_step(val_loader)
-                _, test_acc = self.validate_step(test_loader)
+            epoch_stats = {
+                'epoch': float(epoch + 1),
+                'loss_class': loss_class,
+                'train_acc': train_acc,
+                'val_acc': val_acc,
+                'val_loss': val_loss,
+                'test_acc': test_acc
+            }
+            loss_list.append(epoch_stats)
 
-                loss_list[-1].update({'train_acc': train_acc,
-                                    'val_acc': val_acc,
-                                    'test_acc': test_acc,
-                                    'epoch': float(epoch+1)})
+            # In ra các cột thông số đúng theo định dạng bạn yêu cầu
+            tqdm.write(f"Epoch {epoch+1:02d}/{num_epochs} | loss_class: {loss_class:.4f} | train_acc: {train_acc:.4f} | val_acc: {val_acc:.4f} | val_loss: {val_loss:.4f} | test_acc: {test_acc:.4f}")
 
-                for key in loss_list[-1].keys():
-                    tqdm.write(f"{key}".ljust(15), end = "")
-                tqdm.write("")
-
-                for key in loss_list[-1].keys():
-                    tqdm.write(f"{loss_list[-1][key]:.10f}".ljust(15), end="")
-                tqdm.write("")
-
+            if (epoch + 1) % ckpt_freq == 0:
                 self.save_ckpt(epoch, results_dir)
 
-                # Save the best model, implement if needed
-                # if val_acc > best_score:
-                #     best_score = val_acc
-                #     self.save_ckpt(epoch, results_dir, is_best=True)
-        
-        output_file = open(os.path.join(results_dir, 'loss_list'), 'a', encoding='utf-8')
-        for dic in loss_list:
-            json.dump(dic, output_file)
-            output_file.write("\n")
+            early_stopping(val_loss)
+            if early_stopping.early_stop:
+                tqdm.write("Early stopping triggered. Stopping training.")
+                break
+
+        with open(os.path.join(results_dir, 'loss_list.json'), 'w', encoding='utf-8') as output_file:
+            json.dump(loss_list, output_file, indent=4)
         
         return loss_list
+    
+    def extract_features(self, loader, save_path):
+        self.model.eval()
+        total_samples = len(loader.dataset)
+        
+        features_arr = None
+        labels_arr = np.empty((total_samples,), dtype=np.int64)
 
+        tqdm.write(f"Extracting features to {save_path}...")
+        current_idx = 0
+        
+        with torch.no_grad():
+            for all_x, all_y in loader:
+                if self.cuda:
+                    all_x = all_x.cuda()
+
+                feature = self.model(all_x, extract_features=True).cpu().numpy()
+                batch_size = feature.shape[0]
+                
+                if features_arr is None:
+                    feature_dim = feature.shape[1]
+                    features_arr = np.empty((total_samples, feature_dim), dtype=np.float32)
+
+                features_arr[current_idx : current_idx + batch_size] = feature
+                labels_arr[current_idx : current_idx + batch_size] = all_y.numpy()
+                current_idx += batch_size
+
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        label_path = save_path.replace('features', 'labels')
+        
+        np.save(label_path, labels_arr)
+        np.save(save_path, features_arr)
+        tqdm.write("Feature extraction completed.")
 
     def save_ckpt(self, epoch, results_dir, is_best=False):
-        if is_best:
-            checkpoint_path = os.path.join(results_dir, 'ckpts' ,f'Best_ckpt.pth.rar')
-        else:
-            checkpoint_path = os.path.join(results_dir, 'ckpts' ,f'Epoch_{epoch}_ckpt.pth.rar')
-
+        checkpoint_path = os.path.join(results_dir, 'ckpts' ,f'Epoch_{epoch}_ckpt.pth.rar')
         state_dict = {
             'epoch': epoch,
             'model': self.model.state_dict(),
@@ -170,23 +199,3 @@ class BaseTrainer():
         if torch.cuda.is_available():
             torch.cuda.set_rng_state(state_dict['cuda_rng'])
         return epoch
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
