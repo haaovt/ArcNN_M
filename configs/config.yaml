@@ -4,33 +4,23 @@ load_checkpoint: None
 # dataset
 rootdir: ./dataset
 dataset: MyData
-num_classes: 3
+num_classes: 2
 val_fold: None
 test_fold: None
 
-# train:
+# train
 trainer: BaseTrainer
-batch_size: 32
-num_epochs: 2
+optimizer: RMSprop
+batch_size: 64
+num_epochs: 50
 ckpt_freq: 1
-ckpt: 1 # path to checkpoint file
-learning_rate: 5e-06
-weight_decay: 0.1
+ckpt: None
+learning_rate: 0.0002
+weight_decay: 0.0
 loss_type: CrossEntropy
 
-
-# models
+# model (stage 1: ArcNN feature extractor)
 model: ArcNN
 ArcNN:
-  mlp_num_hidden: 32
-  mlp_dropout: 0.1
-  mlp_width: 64
-  mlp_depth: 5
   num_inputs: 1
-  
-model: SHLNN
-SHLNN:
-  resnet18: true
-  resnet_dropout: 0.1
-  freeze_bn: true
-
+  dropout: 0.2

@@ -25,7 +25,7 @@ import random
 from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 import pandas as pd
-from scipy.signal import butter, lfilter
+from scipy.signal import butter, filtfilt
 from tqdm import tqdm
 
 
@@ -59,7 +59,8 @@ def butter_bandpass_filter(
     high = highcut / nyq
 
     b, a = butter(order, [low, high], btype="band")
-    return lfilter(b, a, data)
+    # filtfilt: zero-phase (không gây phase delay như lfilter)
+    return filtfilt(b, a, data)
 
 
 def normalize_minmax(signal):

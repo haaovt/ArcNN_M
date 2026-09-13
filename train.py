@@ -20,6 +20,7 @@ QUAN TRỌNG VỀ STORAGE:
 Không lưu toàn bộ dataset trung gian vào /kaggle/working.
 """
 
+import copy
 import gc
 import json
 import os
@@ -275,7 +276,7 @@ def run_one_fold(
     # ========================================================
     # 1. Train ArcNN
     # ========================================================
-    arcnn_cfg = dict(cfgs)
+    arcnn_cfg = copy.deepcopy(cfgs)
 
     arcnn_cfg["model"] = "ArcNN"
     arcnn_cfg["learning_rate"] = AR_CNN_LR
@@ -297,7 +298,7 @@ def run_one_fold(
         num_epochs=PAPER_MAX_EPOCHS,
         train_loader=train_loader,
         val_loader=val_loader,
-        test_loader=test_loader,
+        test_loader=None,          # Paper: test không được nhìn thấy trong ArcNN training
         results_dir=arcnn_result_dir,
         patience=PATIENCE,
     )
@@ -401,7 +402,7 @@ def run_one_fold(
     # ========================================================
     # 6. Train SHLNN
     # ========================================================
-    shlnn_cfg = dict(cfgs)
+    shlnn_cfg = copy.deepcopy(cfgs)
 
     shlnn_cfg["model"] = "SHLNN"
     shlnn_cfg["learning_rate"] = SHLNN_LR

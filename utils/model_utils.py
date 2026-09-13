@@ -193,14 +193,14 @@ class ArcNN(nn.Module):
 
     def _initialize_weights(self):
         """
-        Giữ cách khởi tạo Conv của repo gốc.
+        Paper (Sec IV.A): "uniformly initialize filter kernels".
+        Dùng kaiming_uniform_ (PyTorch default cho Conv1d với ReLU).
         """
         for module in self.modules():
             if isinstance(module, nn.Conv1d):
-                nn.init.uniform_(
+                nn.init.kaiming_uniform_(
                     module.weight,
-                    a=-0.05,
-                    b=0.05,
+                    nonlinearity='relu',
                 )
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)

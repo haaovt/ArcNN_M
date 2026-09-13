@@ -16,7 +16,7 @@ num_epochs: 50
 ckpt_freq: 5
 ckpt: None # path to checkpoint file
 learning_rate: 0.0002 
-weight_decay: 0.0001
+weight_decay: 0.0
 loss_type: CrossEntropy
 
 
@@ -25,5 +25,3 @@ model: ArcNN
 ArcNN:
   num_inputs: 1
   dropout: 0.2
-
-
