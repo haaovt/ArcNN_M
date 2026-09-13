@@ -25,7 +25,7 @@ import random
 from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 import pandas as pd
-from scipy.signal import butter, filtfilt
+from scipy.signal import butter, lfilter
 from tqdm import tqdm
 
 
@@ -59,8 +59,7 @@ def butter_bandpass_filter(
     high = highcut / nyq
 
     b, a = butter(order, [low, high], btype="band")
-    # filtfilt: zero-phase (không gây phase delay như lfilter)
-    return filtfilt(b, a, data)
+    return lfilter(b, a, data)
 
 
 def normalize_minmax(signal):
@@ -223,11 +222,24 @@ def process_raw_csv_to_kfold(
 
     total_samples = sum(r[2] for r in results)
 
+    # Tổng hợp theo fold — không in từng file
+    fold_stats = {}
+    for fold_name, base_name, n_samples in results:
+        if fold_name not in fold_stats:
+            fold_stats[fold_name] = {"csv_files": 0, "samples": 0}
+        fold_stats[fold_name]["csv_files"] += 1
+        fold_stats[fold_name]["samples"]   += n_samples
+
     print("\n===== PREPROCESSING DONE =====")
     print(f"CSV files : {len(csv_files)}")
     print(f"K-fold    : {k_folds}")
     print(f"Samples   : {total_samples}")
     print(f"Output    : {output_dir}")
+    print("\nChi tiết từng fold:")
+    for fold_name in sorted(fold_stats.keys()):
+        s = fold_stats[fold_name]
+        print(f"  {fold_name}: {s['csv_files']} CSV files  |  {s['samples']} samples")
+    print("================================\n")
 
     return results
 
