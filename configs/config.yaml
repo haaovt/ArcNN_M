@@ -26,7 +26,7 @@ ArcNN:
   mlp_dropout: 0.1
   mlp_width: 64
   mlp_depth: 5
-  num_inputs: 5
+  num_inputs: 1
   
 model: SHLNN
 SHLNN:
