@@ -58,9 +58,9 @@ ARC_VOLTAGE_MAX = 20
 
 # Tỉ lệ Train/Val/Test — khớp đúng Bảng II của paper:
 # 15957/3985/4981 trên tổng 24918 mẫu ≈ 64.0% / 16.0% / 20.0%.
-TRAIN_RATIO = 0.64
-VAL_RATIO = 0.16
-TEST_RATIO = 0.20  # = 1 - TRAIN_RATIO - VAL_RATIO
+TRAIN_RATIO = 0.80
+VAL_RATIO = 0.10
+TEST_RATIO = 0.10  # = 1 - TRAIN_RATIO - VAL_RATIO
 
 
 def butter_bandpass_filter(
@@ -251,30 +251,30 @@ def process_raw_csv_to_train_val_test(
 
     n = len(csv_files)
 
-    if n >= 3:
+    
         # ---- Chia theo FILE ----
-        n_train = max(1, round(train_ratio * n))
-        n_train = min(n_train, n - 2)  # chừa ít nhất 1 file cho val và 1 cho test
-        n_val = max(1, round(val_ratio * n))
-        n_val = min(n_val, n - n_train - 1)
+    n_train = max(1, round(train_ratio * n))
+    n_train = min(n_train, n - 2)  # chừa ít nhất 1 file cho val và 1 cho test
+    n_val = max(1, round(val_ratio * n))
+    n_val = min(n_val, n - n_train - 1)
 
-        train_files = csv_files[:n_train]
-        val_files = csv_files[n_train:n_train + n_val]
-        test_files = csv_files[n_train + n_val:]
+    train_files = csv_files[:n_train]
+    val_files = csv_files[n_train:n_train + n_val]
+    test_files = csv_files[n_train + n_val:]
 
-        print(
+    print(
             f"Chia {n} file CSV theo FILE: "
             f"train={len(train_files)}, val={len(val_files)}, test={len(test_files)} "
             f"(seed={seed})"
         )
 
-        tasks = (
+    tasks = (
             [("train", f, output_dir, seq_len) for f in train_files]
             + [("val", f, output_dir, seq_len) for f in val_files]
             + [("test", f, output_dir, seq_len) for f in test_files]
         )
 
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
             results = list(
                 tqdm(
                     executor.map(process_file_whole, tasks),
@@ -283,37 +283,11 @@ def process_raw_csv_to_train_val_test(
                 )
             )
 
-        totals = {"train": 0, "val": 0, "test": 0}
-        for split_name, _, count in results:
+    totals = {"train": 0, "val": 0, "test": 0}
+    for split_name, _, count in results:
             totals[split_name] += count
 
-    else:
-        # ---- Quá ít file: chia THEO THỜI GIAN bên trong từng file ----
-        print(
-            f"CẢNH BÁO: chỉ có {n} file CSV (<3), không đủ để chia "
-            f"train/val/test theo FILE. Chuyển sang chia THEO THỜI GIAN "
-            f"bên trong từng file: {train_ratio*100:.0f}% đầu -> train, "
-            f"{val_ratio*100:.0f}% giữa -> val, phần còn lại -> test."
-        )
 
-        tasks = [
-            (f, output_dir, seq_len, train_ratio, val_ratio)
-            for f in csv_files
-        ]
-
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            results = list(
-                tqdm(
-                    executor.map(process_file_chronological, tasks),
-                    total=len(tasks),
-                    desc="Preprocessing (split theo thời gian)",
-                )
-            )
-
-        totals = {"train": 0, "val": 0, "test": 0}
-        for _, counts in results:
-            for k in totals:
-                totals[k] += counts[k]
 
     print("\n===== PREPROCESSING DONE =====")
     print(f"CSV files : {n}")
@@ -352,7 +326,7 @@ def auto_find_kaggle_input():
 
 
 if __name__ == "__main__":
-    KAGGLE_INPUT = auto_find_kaggle_input()
+    KAGGLE_INPUT = "/kaggle/input/datasets/adelanguyen/arc-fault-ieee/Arc Fault"
 
     # Scratch disk: không chiếm quota output /kaggle/working.
     KAGGLE_SCRATCH = "/kaggle/tmp/arcnn/dataset/MyData"
