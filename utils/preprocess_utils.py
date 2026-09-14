@@ -25,7 +25,7 @@ import random
 from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 import pandas as pd
-from scipy.signal import butter, lfilter
+from scipy.signal import butter, filtfilt
 from tqdm import tqdm
 
 
@@ -59,7 +59,7 @@ def butter_bandpass_filter(
     high = highcut / nyq
 
     b, a = butter(order, [low, high], btype="band")
-    return lfilter(b, a, data)
+    return filtfilt(b, a, data)
 
 
 def normalize_minmax(signal):
@@ -105,8 +105,20 @@ def make_samples_from_csv(file_path, seq_len=SEQ_LEN):
         chunk_voltage = voltage[start:start + seq_len]
 
         # Label theo tiêu chí điện áp trong paper.
-        mean_voltage = float(np.mean(chunk_voltage))
-        label = int(ARC_VOLTAGE_MIN <= mean_voltage <= ARC_VOLTAGE_MAX)
+        #
+        # KHÔNG dùng mean(voltage) vì arc thường chỉ xảy ra trong
+        # một phần của window — mean kéo voltage trung bình xuống
+        # và mislabel arc window thành normal.
+        #
+        # Ví dụ: arc 100 điểm (17V) + normal 412 điểm (0V)
+        #   mean = 3.3V → labeled NORMAL (sai)
+        #   max  = 17V  → labeled ARC    (đúng)
+        #
+        # Paper (Section II.B): dùng steady-state voltage 15-20V
+        # để nhận biết arc. Khi arc đang cháy, voltage luôn >= 15V.
+        # Nên nếu MAX voltage trong window >= 15V → có arc xảy ra.
+        max_voltage = float(np.max(np.abs(chunk_voltage)))
+        label = int(max_voltage >= ARC_VOLTAGE_MIN)
 
         # Band-pass 90-110 kHz, sau đó Min-Max.
         filtered_current = butter_bandpass_filter(chunk_current)
@@ -222,24 +234,11 @@ def process_raw_csv_to_kfold(
 
     total_samples = sum(r[2] for r in results)
 
-    # Tổng hợp theo fold — không in từng file
-    fold_stats = {}
-    for fold_name, base_name, n_samples in results:
-        if fold_name not in fold_stats:
-            fold_stats[fold_name] = {"csv_files": 0, "samples": 0}
-        fold_stats[fold_name]["csv_files"] += 1
-        fold_stats[fold_name]["samples"]   += n_samples
-
     print("\n===== PREPROCESSING DONE =====")
     print(f"CSV files : {len(csv_files)}")
     print(f"K-fold    : {k_folds}")
     print(f"Samples   : {total_samples}")
     print(f"Output    : {output_dir}")
-    print("\nChi tiết từng fold:")
-    for fold_name in sorted(fold_stats.keys()):
-        s = fold_stats[fold_name]
-        print(f"  {fold_name}: {s['csv_files']} CSV files  |  {s['samples']} samples")
-    print("================================\n")
 
     return results
 

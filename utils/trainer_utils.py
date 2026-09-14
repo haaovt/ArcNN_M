@@ -119,10 +119,12 @@ class BaseTrainer:
         """
         Tính class weights từ train_loader để xử lý class imbalance.
 
-        Nếu dataset có 98% normal và 2% arc, model sẽ chỉ predict
-        normal để đạt accuracy cao mà không học gì cả.
+        Dùng sqrt để làm mềm tỉ lệ — tránh weight quá cực đoan
+        khiến training mất ổn định.
 
-        Formula: weight[c] = total_samples / (n_classes * count[c])
+        Ví dụ: Normal=98%, Arc=2%
+          Raw ratio  = 49x  → quá mạnh, model dao động
+          Sqrt ratio = ~7x  → vừa đủ để model chú ý arc
         """
         label_counts = torch.zeros(2)
 
@@ -131,10 +133,15 @@ class BaseTrainer:
                 label_counts[c] += (all_y == c).sum()
 
         total = label_counts.sum()
-        weights = total / (2 * label_counts)
 
-        # Clip để tránh weight quá lớn khi imbalance cực đoan
-        weights = torch.clamp(weights, max=50.0)
+        # sqrt softening: giảm tỉ lệ weight từ N xuống sqrt(N)
+        weights = torch.sqrt(total / (2 * label_counts))
+
+        # Cap ở 10x để tránh mất ổn định khi imbalance cực đoan
+        weights = torch.clamp(weights, max=10.0)
+
+        # Normalize về mean=1 để không thay đổi scale tổng thể của loss
+        weights = weights / weights.mean()
 
         print(
             f"Class weights — Normal: {weights[0]:.3f} | "
