@@ -1,0 +1,39 @@
+# =========================================================
+# config.yaml — cấu hình DUY NHẤT cho pipeline Train/Val/Test
+# (không còn K-fold, không còn config_stage1/config_stage2)
+# =========================================================
+train_id: no1
+load_checkpoint: None
+
+# ===== Dataset =====
+# Cấu trúc thư mục bắt buộc (do preprocess_utils.py tạo ra):
+#   rootdir/dataset/train/*_x.npy, *_y.npy
+#   rootdir/dataset/val/*_x.npy,   *_y.npy
+#   rootdir/dataset/test/*_x.npy,  *_y.npy
+rootdir: /kaggle/tmp/arcnn/dataset
+dataset: MyData
+num_classes: 2
+
+# ===== Train =====
+trainer: BaseTrainer
+batch_size: 64        # paper
+num_epochs: 50         # paper (early stopping patience=3, xem train.py)
+
+# Ghi chú những field ĐÃ BỎ so với bản cũ vì không được code nào
+# đọc tới (đã kiểm tra lại toàn bộ utils/*.py):
+#   optimizer   -> trainer_utils.py hard-code RMSprop theo paper.
+#   loss_type   -> trainer_utils.py hard-code CrossEntropyLoss (không
+#                  class-weight) theo paper.
+#   ckpt_freq/ckpt -> không có logic checkpoint định kỳ, chỉ lưu
+#                  best_ckpt.pth duy nhất.
+#   val_fold/test_fold -> chỉ dùng cho cơ chế K-fold cũ, đã bỏ.
+#   model / ArcNN{...} / SHLNN{...} -> train.py tự set model_name
+#                  và learning_rate cho từng stage (ArcNN rồi SHLNN)
+#                  để đảm bảo đúng kiến trúc/hparam của paper; kiến
+#                  trúc ArcNN/SHLNN cũng được hard-code cố định
+#                  trong model_utils.py, không đọc từ config.
+#
+# learning_rate của ArcNN (0.0002) và SHLNN (0.001) được train.py
+# tự gán theo paper cho từng stage — không cần khai báo ở đây.
+# weight_decay mặc định 0.0 nếu không khai báo (paper không đề cập
+# regularization L2 nào khác).
