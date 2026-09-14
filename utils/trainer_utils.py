@@ -115,6 +115,36 @@ class BaseTrainer:
         self.best_val_loss = float("inf")
         self.best_state = None
 
+    def _compute_class_weights(self, train_loader):
+        """
+        Tính class weights từ train_loader để xử lý class imbalance.
+
+        Nếu dataset có 98% normal và 2% arc, model sẽ chỉ predict
+        normal để đạt accuracy cao mà không học gì cả.
+
+        Formula: weight[c] = total_samples / (n_classes * count[c])
+        """
+        label_counts = torch.zeros(2)
+
+        for _, all_y in train_loader:
+            for c in range(2):
+                label_counts[c] += (all_y == c).sum()
+
+        total = label_counts.sum()
+        weights = total / (2 * label_counts)
+
+        # Clip để tránh weight quá lớn khi imbalance cực đoan
+        weights = torch.clamp(weights, max=50.0)
+
+        print(
+            f"Class weights — Normal: {weights[0]:.3f} | "
+            f"Arc: {weights[1]:.3f}  "
+            f"(Normal: {label_counts[0].long()} samples | "
+            f"Arc: {label_counts[1].long()} samples)"
+        )
+
+        return weights
+
     def predict(self, x):
         return self.model(x)
 
@@ -285,6 +315,13 @@ class BaseTrainer:
         )
 
         history = []
+
+        # Tính class weights từ train_loader để xử lý class imbalance
+        print("Tính class weights...")
+        class_weights = self._compute_class_weights(train_loader)
+        if self.cuda:
+            class_weights = class_weights.cuda()
+        self.loss_type = nn.CrossEntropyLoss(weight=class_weights)
 
         early_stopping = EarlyStopping(
             patience=patience
