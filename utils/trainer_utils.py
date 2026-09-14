@@ -3,10 +3,23 @@ trainer_utils.py
 ----------------
 Training loop cho ArcNN và SHLNN.
 
-Các điểm đã sửa theo paper:
+Các điểm đã sửa theo paper (đã đối chiếu với file paper thật — Yan,
+Li, Duan, "A Simplified Current Feature Extraction and Deployment
+Method for DC Series Arc Fault Detection", IEEE TIE 2024):
 - RMSprop.
-- CrossEntropyLoss.
-- Early stopping theo validation loss.
+- ArcNN: CrossEntropyLoss (paper Section IV-A, target là class-index).
+- SHLNN: mặc định BCELoss + Sigmoid output (paper Section III-C, target
+  one-hot [0,1]/[1,0]) — KHÁC với ArcNN. Config hiện tại của bạn
+  (config_stage2.yaml) ghi `loss_type: CrossEntropy` cho SHLNN, xung
+  đột với paper — có thể tắt Sigmoid/BCE và quay về CrossEntropy qua
+  cfgs['SHLNN']['sigmoid_output']=False. Xem model_utils.py.SHLNN,
+  BaseTrainer._uses_sigmoid_bce() và _prepare_target() ở dưới.
+- Early stopping theo validation loss, patience=3 — ĐÃ XÁC NHẬN khớp
+  paper ("When the loss stops decreasing for more than three epochs,
+  the training is stopped").
+- Paper: batch_size=64, epochs=50 (2 giá trị này nằm ở train.py/config,
+  không có trong các file utils; xem sweep_utils.py đã cập nhật
+  batch_size=64 cố định theo paper).
 - KHÔNG test mỗi epoch.
 - Lưu duy nhất best checkpoint.
 - Khôi phục best model trước khi test/extract feature.
@@ -75,6 +88,12 @@ class BaseTrainer:
         if model_name is None:
             model_name = cfgs.get("model", "ArcNN")
 
+        # Lưu lại để _prepare_target / _compute_class_weights / train()
+        # biết cách format target và chọn loss đúng cho từng model.
+        self.model_name = model_name
+        # (self.model được gán ở khối if/elif ngay dưới; _uses_sigmoid_bce
+        # được gọi SAU khi self.model tồn tại, xem property bên dưới.)
+
         if model_name == "ArcNN":
             self.model = ArcNN(cfgs)
         elif model_name == "SHLNN":
@@ -105,8 +124,20 @@ class BaseTrainer:
             weight_decay=weight_decay,
         )
 
-        # Paper dùng cross-entropy.
-        self.loss_type = nn.CrossEntropyLoss()
+        # SỬA: ArcNN dùng CrossEntropyLoss (paper Section IV-A, target là
+        # class-index). SHLNN dùng BCELoss vì model_utils.SHLNN giờ có
+        # Sigmoid ở output theo mặc định (paper Section III-C) —
+        # CrossEntropyLoss không hợp với input đã qua sigmoid (nó tự áp
+        # log_softmax lên input, giả định input là logits chưa qua
+        # activation nào). Việc chọn BCE hay CrossEntropy được quyết
+        # định qua self._uses_sigmoid_bce (đọc từ chính model đã tạo ở
+        # trên, tôn trọng cfgs['SHLNN']['sigmoid_output'] nếu bạn tắt
+        # nó đi — xem model_utils.py.SHLNN).
+        # Xem _prepare_target() để biết cách format target tương ứng.
+        if self._uses_sigmoid_bce():
+            self.loss_type = nn.BCELoss()
+        else:
+            self.loss_type = nn.CrossEntropyLoss()
 
         if self.cuda:
             self.model.cuda()
@@ -115,16 +146,82 @@ class BaseTrainer:
         self.best_val_loss = float("inf")
         self.best_state = None
 
+    def _uses_sigmoid_bce(self):
+        """
+        True nếu model hiện tại có output đã qua Sigmoid (mặc định cho
+        SHLNN theo paper Section III-C) -> cần BCELoss + target one-hot.
+        False nếu output là logits -> CrossEntropyLoss + target class-index.
+
+        Đọc trực tiếp từ `self.model.use_sigmoid_output` (đặt ở
+        model_utils.py.SHLNN.__init__ theo cfgs['SHLNN']['sigmoid_output'],
+        mặc định True) thay vì chỉ dựa vào model_name, để việc tắt
+        Sigmoid qua config (xem "XUNG ĐỘT VỚI CONFIG" trong
+        model_utils.py) có tác dụng thật sự ở đây, không bị bỏ qua.
+        """
+        return self.model_name == "SHLNN" and getattr(
+            self.model, "use_sigmoid_output", True
+        )
+
+    def _prepare_target(self, all_y):
+        """
+        Chuẩn hoá target cho đúng loss/activation của từng model.
+
+        - ArcNN (hoặc SHLNN với sigmoid_output=False): output là logits,
+          dùng CrossEntropyLoss -> target giữ nguyên dạng class-index
+          (long), như trước.
+        - SHLNN với sigmoid_output=True (mặc định): output đã qua
+          Sigmoid (paper Section III-C), dùng BCELoss -> target phải
+          cùng shape với output và ở dạng one-hot float, đúng như paper
+          mô tả nhãn: "[0,1] and [1,0] for dc arc and normal,
+          respectively".
+
+        all_y (từ DataLoader) luôn là class-index (0/1) bất kể model,
+        vì CustomDataset/PCADataset không đổi theo model — việc chuyển
+        sang one-hot chỉ cần làm ở đây, ngay trước khi tính loss.
+        """
+        if self._uses_sigmoid_bce():
+            return torch.nn.functional.one_hot(all_y, num_classes=2).float()
+        return all_y
+
     def _compute_class_weights(self, train_loader):
         """
         Tính class weights từ train_loader để xử lý class imbalance.
 
-        Dùng sqrt để làm mềm tỉ lệ — tránh weight quá cực đoan
-        khiến training mất ổn định.
+        SỬA (đã đối chiếu với file paper thật):
+        Bài paper KHÔNG hề mô tả bất kỳ kỹ thuật xử lý mất cân bằng lớp
+        nào (không class weight, không oversampling, không focal loss).
+        Hơn nữa, Table II của paper cho thấy dataset của paper khá CÂN
+        BẰNG: tổng training samples ~15957, trong đó arc ≈ 8629 (54%)
+        và normal ≈ 7328 (46%) — không hề lệch như ví dụ "Normal=98%,
+        Arc=2%" mà comment cũ của hàm này minh hoạ (con số đó chỉ là ví
+        dụ giả định, không lấy từ paper). File CSV mẫu bạn gửi cũng cho
+        kết quả tương tự (1090 arc / 863 normal ≈ 56/44 cho 1 file).
 
-        Ví dụ: Normal=98%, Arc=2%
-          Raw ratio  = 49x  → quá mạnh, model dao động
-          Sqrt ratio = ~7x  → vừa đủ để model chú ý arc
+        Vì vậy, mặc định của hàm này đổi thành 'none' (KHÔNG reweight)
+        để khớp đúng những gì paper thực sự làm. Vẫn giữ 2 lựa chọn
+        khác qua cfgs['class_weight_scheme'] để bạn tự dùng nếu dataset
+        thật của bạn có fold/file lệch nhãn nhiều hơn paper:
+            'none'      (mặc định — khớp đúng paper, không reweighting)
+            'balanced'  (n/(2*count) kiểu sklearn, không hyperparameter tự chế)
+            'sqrt_soft' (công thức tự chế cũ: sqrt + clamp 10x + normalize)
+
+        LƯU Ý khi dùng 'balanced'/'sqrt_soft' với SHLNN: BCELoss áp
+        weight theo shape của OUTPUT (mỗi sample đều bị nhân weight[0]
+        cho unit "normal" và weight[1] cho unit "arc"), khác với
+        CrossEntropyLoss (áp weight[y_i] theo đúng NHÃN THẬT của từng
+        sample). Hai cách này không tương đương về ý nghĩa thống kê —
+        nếu cần reweight SHLNN đúng kiểu per-sample, nên cân nhắc
+        oversampling dữ liệu thay vì dùng `weight=` của BCELoss.
+
+        SỬA LỖI CHIA CHO 0:
+        Nếu một lớp vắng mặt hoàn toàn trong train_loader (dễ xảy ra
+        khi K-fold/train-val split chưa cân bằng nhãn giữa các fold),
+        total/(2*count) sẽ chia cho 0 -> inf. Bản cũ vô tình "che" lỗi
+        này bằng torch.clamp(max=10), khiến người dùng không biết fold
+        đang gặp vấn đề dữ liệu. Giờ phát hiện và cảnh báo rõ, đồng
+        thời fallback về weight=1 (không reweight) cho lần gọi đó thay
+        vì âm thầm dùng một con số bị chặn trần không phản ánh đúng
+        thực tế.
         """
         label_counts = torch.zeros(2)
 
@@ -133,18 +230,34 @@ class BaseTrainer:
                 label_counts[c] += (all_y == c).sum()
 
         total = label_counts.sum()
+        scheme = self.cfgs.get("class_weight_scheme", "none")
 
-        # sqrt softening: giảm tỉ lệ weight từ N xuống sqrt(N)
-        weights = torch.sqrt(total / (2 * label_counts))
+        if scheme == "none":
+            weights = torch.ones(2)
+            print(f"Class weights: tắt (scheme='none') — dùng weight=1 cho mọi lớp.")
+            return weights
 
-        # Cap ở 10x để tránh mất ổn định khi imbalance cực đoan
-        weights = torch.clamp(weights, max=10.0)
+        if (label_counts == 0).any():
+            missing = [c for c in range(2) if label_counts[c] == 0]
+            print(
+                f"[CẢNH BÁO] Lớp {missing} không xuất hiện trong tập train "
+                f"của lần gọi train() này -> bỏ qua class weighting "
+                f"(weight=1) để tránh chia cho 0. Đây thường là dấu hiệu "
+                f"fold/train-val đang mất cân bằng nhãn nặng — nên kiểm "
+                f"tra lại bước chia K-fold trong preprocess_utils.py."
+            )
+            return torch.ones(2)
 
-        # Normalize về mean=1 để không thay đổi scale tổng thể của loss
-        weights = weights / weights.mean()
+        if scheme == "sqrt_soft":
+            # Công thức cũ — giữ lại để so sánh, KHÔNG còn là mặc định.
+            weights = torch.sqrt(total / (2 * label_counts))
+            weights = torch.clamp(weights, max=10.0)
+            weights = weights / weights.mean()
+        else:  # "balanced" (mặc định) — công thức chuẩn kiểu sklearn
+            weights = total / (2 * label_counts)
 
         print(
-            f"Class weights — Normal: {weights[0]:.3f} | "
+            f"Class weights (scheme={scheme}) — Normal: {weights[0]:.3f} | "
             f"Arc: {weights[1]:.3f}  "
             f"(Normal: {label_counts[0].long()} samples | "
             f"Arc: {label_counts[1].long()} samples)"
@@ -171,7 +284,8 @@ class BaseTrainer:
             self.optimizer.zero_grad(set_to_none=True)
 
             pred = self.predict(all_x)
-            loss = self.loss_type(pred, all_y)
+            # SỬA: target phải khớp loss của từng model (xem _prepare_target).
+            loss = self.loss_type(pred, self._prepare_target(all_y))
 
             loss.backward()
             self.optimizer.step()
@@ -215,7 +329,8 @@ class BaseTrainer:
                 all_y = all_y.cuda(non_blocking=True)
 
             pred = self.predict(all_x)
-            loss = self.loss_type(pred, all_y)
+            # SỬA: target phải khớp loss của từng model (xem _prepare_target).
+            loss = self.loss_type(pred, self._prepare_target(all_y))
 
             total_loss += loss.item() * all_x.size(0)
             total_correct += (
@@ -312,6 +427,16 @@ class BaseTrainer:
         QUAN TRỌNG:
         Không evaluate test trong vòng epoch.
         Điều này tránh dùng test set để quan sát training.
+
+        ĐÃ XÁC NHẬN VỚI PAPER: `patience=3` (giá trị default của tham
+        số này, và cũng là default của class EarlyStopping) khớp đúng
+        paper Section IV-A: "When the loss stops decreasing for more
+        than three epochs, the training is stopped". Nếu train.py hoặc
+        config nào đó truyền một giá trị patience khác 3, giờ có thể
+        khẳng định điều đó đang lệch khỏi paper (trước đây mình chưa
+        xác nhận được nên chỉ nêu là cần kiểm tra). Paper cũng nêu rõ
+        num_epochs=50 — tham số này nằm ở train.py/config, không có
+        trong utils/, bạn nên xác nhận riêng.
         """
         if results_dir is None:
             raise ValueError("results_dir không được None.")
@@ -328,7 +453,14 @@ class BaseTrainer:
         class_weights = self._compute_class_weights(train_loader)
         if self.cuda:
             class_weights = class_weights.cuda()
-        self.loss_type = nn.CrossEntropyLoss(weight=class_weights)
+        # SỬA: loss phải khớp model (xem __init__ / model_utils.SHLNN).
+        # Mặc định class_weight_scheme='none' -> class_weights toàn 1.0,
+        # tương đương không reweight (đúng với paper — xem docstring
+        # _compute_class_weights).
+        if self._uses_sigmoid_bce():
+            self.loss_type = nn.BCELoss(weight=class_weights)
+        else:
+            self.loss_type = nn.CrossEntropyLoss(weight=class_weights)
 
         early_stopping = EarlyStopping(
             patience=patience
@@ -388,7 +520,8 @@ class BaseTrainer:
                     epoch,
                 )
 
-            # Paper: dừng nếu validation loss không giảm >3 epoch.
+            # Dừng nếu validation loss không giảm quá `patience` epoch
+            # liên tiếp (xem lưu ý về giá trị patience ở docstring trên).
             if early_stopping.step(val_loss):
                 tqdm.write(
                     "Early stopping: validation loss "

@@ -82,8 +82,14 @@ PAPER_BATCH_SIZE = 64
 # Paper: maximum 50 epochs.
 PAPER_MAX_EPOCHS = 50
 
-# Early stopping sau >3 epoch không cải thiện.
-PATIENCE = 10
+# SỬA (đã đối chiếu với file paper thật, Section IV-A):
+# "When the loss stops decreasing for more than three epochs, the
+# training is stopped" -> patience PHẢI là 3, không phải 10 như bản
+# cũ. Với patience=10, early stopping sẽ chờ lâu hơn ~3x so với paper,
+# khiến kết quả (best_epoch, số epoch thực chạy) không còn tái hiện
+# đúng thí nghiệm của paper, dù không sai về mặt kỹ thuật (vẫn train
+# được), chỉ là không khớp paper.
+PATIENCE = 3
 
 
 def prepare_runtime(cfgs, args):
