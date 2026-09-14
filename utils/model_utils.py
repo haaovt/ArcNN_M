@@ -16,6 +16,13 @@ ArcNN:
 - TCN residual block 1: 2 -> 10, kernel=40, dilation=1
 - TCN residual block 2: 10 -> 2, kernel=40, dilation=2
 - flatten: 2 x 512 = 1024
+
+SỬA so với bản trước:
+- Paper (Sec III.A): "batch normalization layer is used after each
+  convolutional layer". Nhánh skip/downsample (1x1 Conv dùng khi
+  in_channels != out_channels) cũng là một convolutional layer, nên
+  cần có BatchNorm1d ngay sau nó -> downsample giờ là
+  Conv1d -> BatchNorm1d thay vì chỉ Conv1d trần.
 """
 
 import torch
@@ -50,7 +57,8 @@ class TCNResidualBlock(nn.Module):
         -> BatchNorm
         -> ReLU
         -> Dropout
-        -> residual add
+        -> residual add (skip branch: Conv1d 1x1 -> BatchNorm khi
+           in_channels != out_channels)
     """
 
     def __init__(
@@ -110,8 +118,13 @@ class TCNResidualBlock(nn.Module):
         )
 
         # Projection shortcut khi số channel thay đổi.
+        # Paper: "batch normalization layer is used after each
+        # convolutional layer" -> áp dụng cả cho conv 1x1 của skip path.
         self.downsample = (
-            nn.Conv1d(in_channels, out_channels, kernel_size=1)
+            nn.Sequential(
+                nn.Conv1d(in_channels, out_channels, kernel_size=1),
+                nn.BatchNorm1d(out_channels),
+            )
             if in_channels != out_channels
             else None
         )

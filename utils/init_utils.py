@@ -1,95 +1,129 @@
+"""
+init_utils.py
+-------------
+Xây dựng DataLoader cho ArcNN (raw window) và SHLNN (feature sau PCA).
+
+KHÔNG còn K-fold: dữ liệu đã được preprocess_utils.py chia sẵn thành
+3 thư mục cố định Train / Val / Test (xem preprocess_utils.py), và
+get_dataloader() ở đây chỉ việc load trực tiếp 3 thư mục đó — không có
+vòng lặp qua nhiều fold, không có logic random Subset train/val/test
+nữa (nguồn gây bug ở bản cũ).
+
+get_dataloader() trả về TRỰC TIẾP một tuple:
+    train_loader, val_loader, test_loader
+(không còn là list các fold như trước).
+"""
+
 import os
-import numpy as np
-from torch.utils.data import DataLoader, Subset, ConcatDataset
+from torch.utils.data import DataLoader
 from utils.trainer_utils import BaseTrainer
 from utils.dataset_utils import CustomDataset, PCADataset
 
 trainers_dict = {'BaseTrainer': BaseTrainer}
-datasets_dict = {'CustomDataset': CustomDataset, 'MyData': CustomDataset, 'PCADataset': PCADataset}
+datasets_dict = {'CustomDataset': CustomDataset, 'MyData': CustomDataset}
+
 
 def get_trainer(cfgs, args):
     return trainers_dict[cfgs['trainer']](cfgs, args)
 
+
 def get_dataloader(cfgs, args):
+    """
+    cfgs['dataset'] == 'PCADataset' -> load feature 1024-D đã qua PCA
+    (dùng cho SHLNN, qua initialize.py/manual flow).
+    Ngược lại -> load raw window 512 điểm (dùng cho ArcNN).
+    """
     if cfgs['dataset'] == 'PCADataset':
-        return get_pca_dataloader_folds(cfgs, args)
-    return get_dataloader_folds(cfgs, args)
+        return get_pca_dataloader(cfgs, args)
+    return get_raw_dataloader(cfgs, args)
 
-def get_pca_dataloader_folds(cfgs, args):
-    loaders = []
-    dataset_dir = cfgs['rootdir'] 
-    fold_list = [os.path.join(dataset_dir, f) for f in os.listdir(dataset_dir) if os.path.isdir(os.path.join(dataset_dir, f))]
-    for fold_dir in fold_list:
-        comp_dirs = [d for d in os.listdir(fold_dir) if d.startswith('compressed')]
-        if not comp_dirs: continue
-        comp_dir = os.path.join(fold_dir, comp_dirs[0])
-        train_dataset = PCADataset(os.path.join(comp_dir, 'train_features_pca.npy'), os.path.join(comp_dir, 'train_labels.npy'))
-        val_dataset = PCADataset(os.path.join(comp_dir, 'val_features_pca.npy'), os.path.join(comp_dir, 'val_labels.npy'))
-        test_dataset = PCADataset(os.path.join(comp_dir, 'test_features_pca.npy'), os.path.join(comp_dir, 'test_labels.npy'))
-        train_loaders = DataLoader(dataset=train_dataset, batch_size=cfgs['batch_size'], shuffle=True, num_workers=args.num_workers)
-        val_loaders = DataLoader(dataset=val_dataset, batch_size=cfgs['batch_size'], shuffle=False, num_workers=args.num_workers)
-        test_loaders = DataLoader(dataset=test_dataset, batch_size=cfgs['batch_size'], shuffle=False, num_workers=args.num_workers)
-        loaders.append((train_loaders, val_loaders, test_loaders))
-    return loaders
 
-def get_dataloader_folds(cfgs, args):
+def get_raw_dataloader(cfgs, args):
+    """
+    Load trực tiếp 3 thư mục cố định:
+        <rootdir>/<dataset>/Train
+        <rootdir>/<dataset>/Val
+        <rootdir>/<dataset>/Test
+
+    Các thư mục này do preprocess_utils.py (process_raw_csv_to_split)
+    tạo sẵn — chia theo FILE, một lần duy nhất, không K-fold.
+    """
     dataset_dir = os.path.join(cfgs['rootdir'], cfgs['dataset'])
-    subfolders = [os.path.join(dataset_dir, fold) for fold in os.listdir(dataset_dir) if os.path.isdir(os.path.join(dataset_dir, fold))]
-    fold_list = subfolders if len(subfolders) > 0 else [dataset_dir]
-    loaders = []
+    train_dir = os.path.join(dataset_dir, 'Train')
+    val_dir = os.path.join(dataset_dir, 'Val')
+    test_dir = os.path.join(dataset_dir, 'Test')
 
-    test_fold_cfg = cfgs.get('test_fold', 'None')
-    if test_fold_cfg != 'None':    
-        target_test_fold = os.path.join(dataset_dir, test_fold_cfg)
-        if target_test_fold not in fold_list: raise ValueError(f"Test folder {target_test_fold} not found!")     
-        
-        train_dataset, val_dataset = [], []
-        test_loaders = None
-    
-        for fold in fold_list:
-            dataset = datasets_dict[cfgs['dataset']](fold, cfgs=cfgs)
-            if fold == target_test_fold:
-                test_loaders = DataLoader(dataset=dataset, batch_size=cfgs['batch_size'], shuffle=False, num_workers=args.num_workers)
-            else:
-                idx = np.arange(len(dataset))
-                np.random.shuffle(idx)
-                train_dataset.append(Subset(dataset, idx[:int(0.8*len(dataset))+1]))
-                val_dataset.append(Subset(dataset, idx[int(0.8*len(dataset))+1:]))
-        
-        train_loaders = DataLoader(dataset=ConcatDataset(train_dataset), batch_size=cfgs['batch_size'], shuffle=True, num_workers=args.num_workers)
-        val_loaders = DataLoader(dataset=ConcatDataset(val_dataset), batch_size=cfgs['batch_size'], shuffle=False, num_workers=args.num_workers)
-        loaders.append((train_loaders, val_loaders, test_loaders))
-    else:
-        if len(fold_list) == 1:
-            fold = fold_list[0]
-            dataset = datasets_dict[cfgs['dataset']](fold, cfgs=cfgs)
-            idx = np.arange(len(dataset))
-            np.random.shuffle(idx)
-            train_end, val_end = int(0.7 * len(dataset)), int(0.2 * len(dataset))
-            train_dataset = Subset(dataset, idx[:train_end])
-            val_dataset = Subset(dataset, idx[train_end:val_end])
-            test_dataset = Subset(dataset, idx[val_end:])
-            
-            train_loaders = DataLoader(dataset=train_dataset, batch_size=cfgs['batch_size'], shuffle=True, num_workers=args.num_workers)
-            val_loaders = DataLoader(dataset=val_dataset, batch_size=cfgs['batch_size'], shuffle=False, num_workers=args.num_workers)
-            test_loaders = DataLoader(dataset=test_dataset, batch_size=cfgs['batch_size'], shuffle=False, num_workers=args.num_workers)
-            loaders.append((train_loaders, val_loaders, test_loaders))
-        else:
-            for current_test_fold in fold_list:
-                train_dataset, val_dataset = [], []
-                test_loaders = None
+    for split_name, split_dir in (('Train', train_dir), ('Val', val_dir), ('Test', test_dir)):
+        if not os.path.isdir(split_dir):
+            raise FileNotFoundError(
+                f"Không tìm thấy thư mục {split_name} tại {split_dir}. "
+                f"Hãy chạy preprocess_utils.py (process_raw_csv_to_split) trước."
+            )
 
-                for fold in fold_list:
-                    dataset = datasets_dict[cfgs['dataset']](fold, cfgs=cfgs)
-                    if fold == current_test_fold:
-                        test_loaders = DataLoader(dataset=dataset, batch_size=cfgs['batch_size'], shuffle=False, num_workers=args.num_workers)
-                    else:
-                        idx = np.arange(len(dataset))
-                        np.random.shuffle(idx)
-                        train_dataset.append(Subset(dataset, idx[:int(0.8*len(dataset))+1]))
-                        val_dataset.append(Subset(dataset, idx[int(0.8*len(dataset))+1:]))
-                
-                train_loaders = DataLoader(dataset=ConcatDataset(train_dataset), batch_size=cfgs['batch_size'], shuffle=True, num_workers=args.num_workers)
-                val_loaders = DataLoader(dataset=ConcatDataset(val_dataset), batch_size=cfgs['batch_size'], shuffle=False, num_workers=args.num_workers)
-                loaders.append((train_loaders, val_loaders, test_loaders))
-    return loaders
+    train_dataset = datasets_dict[cfgs['dataset']](train_dir, cfgs=cfgs) \
+        if cfgs['dataset'] in datasets_dict else CustomDataset(train_dir, cfgs=cfgs)
+    val_dataset = CustomDataset(val_dir, cfgs=cfgs)
+    test_dataset = CustomDataset(test_dir, cfgs=cfgs)
+
+    train_loader = DataLoader(
+        dataset=train_dataset,
+        batch_size=cfgs['batch_size'],
+        shuffle=True,
+        num_workers=args.num_workers,
+    )
+    val_loader = DataLoader(
+        dataset=val_dataset,
+        batch_size=cfgs['batch_size'],
+        shuffle=False,
+        num_workers=args.num_workers,
+    )
+    test_loader = DataLoader(
+        dataset=test_dataset,
+        batch_size=cfgs['batch_size'],
+        shuffle=False,
+        num_workers=args.num_workers,
+    )
+
+    return train_loader, val_loader, test_loader
+
+
+def get_pca_dataloader(cfgs, args):
+    """
+    Load thư mục PCA đã nén (1 tập duy nhất, do pca_utils.run_pca_compression
+    tạo ra): cfgs['rootdir'] phải trỏ thẳng tới thư mục compressed_Xd.
+    """
+    pca_dir = cfgs['rootdir']
+
+    train_dataset = PCADataset(
+        os.path.join(pca_dir, 'train_features_pca.npy'),
+        os.path.join(pca_dir, 'train_labels.npy'),
+    )
+    val_dataset = PCADataset(
+        os.path.join(pca_dir, 'val_features_pca.npy'),
+        os.path.join(pca_dir, 'val_labels.npy'),
+    )
+    test_dataset = PCADataset(
+        os.path.join(pca_dir, 'test_features_pca.npy'),
+        os.path.join(pca_dir, 'test_labels.npy'),
+    )
+
+    train_loader = DataLoader(
+        dataset=train_dataset,
+        batch_size=cfgs['batch_size'],
+        shuffle=True,
+        num_workers=args.num_workers,
+    )
+    val_loader = DataLoader(
+        dataset=val_dataset,
+        batch_size=cfgs['batch_size'],
+        shuffle=False,
+        num_workers=args.num_workers,
+    )
+    test_loader = DataLoader(
+        dataset=test_dataset,
+        batch_size=cfgs['batch_size'],
+        shuffle=False,
+        num_workers=args.num_workers,
+    )
+
+    return train_loader, val_loader, test_loader
